@@ -51,10 +51,11 @@ const fieldValidators = {
     // Items
     quantity: z.coerce
         .number()
-        .min(1, { message: "Must be a number greater than 0" }),
+        .gt(0, { message: "Must be a number greater than 0" }),
     unitPrice: z.coerce
         .number()
-        .gt(0, { message: "Must be a number greater than 0" }),
+        .gt(0, { message: "Must be a number greater than 0" })
+        .lte(Number.MAX_SAFE_INTEGER, { message: `Must be ≤ ${Number.MAX_SAFE_INTEGER}` }),
 
     // Strings
     string: z.string(),

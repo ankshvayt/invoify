@@ -7,7 +7,7 @@ import chromium from "@sparticuz/chromium";
 import { getInvoiceTemplate } from "@/lib/helpers";
 
 // Variables
-import { CHROMIUM_EXECUTABLE_PATH, ENV, TAILWIND_CDN } from "@/lib/variables";
+import { ENV, TAILWIND_CDN } from "@/lib/variables";
 
 // Types
 import { InvoiceType } from "@/types";
@@ -22,99 +22,88 @@ import { InvoiceType } from "@/types";
  */
 export async function generatePdfService(req: NextRequest) {
     const body: InvoiceType = await req.json();
-
-    // Create a browser instance
     let browser;
+    let page;
 
     try {
         const ReactDOMServer = (await import("react-dom/server")).default;
-
-        // Get the selected invoice template
         const templateId = body.details.pdfTemplate;
         const InvoiceTemplate = await getInvoiceTemplate(templateId);
-
-        // Read the HTML template from a React component
         const htmlTemplate = ReactDOMServer.renderToStaticMarkup(
             InvoiceTemplate(body)
         );
 
-        // Launch the browser in production or development mode depending on the environment
-        if (ENV === "production") {
-            const puppeteer = await import("puppeteer-core");
-            browser = await puppeteer.launch({
-                args: chromium.args,
-                defaultViewport: chromium.defaultViewport,
-                executablePath: await chromium.executablePath(
-                    CHROMIUM_EXECUTABLE_PATH
-                ),
-                headless: true,
-                ignoreHTTPSErrors: true,
-            });
-        } else if (ENV === "development") {
-            const puppeteer = await import("puppeteer");
-            browser = await puppeteer.launch({
-                args: ["--no-sandbox", "--disable-setuid-sandbox"],
-                headless: "new",
-            });
-        }
+		if (ENV === "production") {
+			const puppeteer = (await import("puppeteer-core")).default;
+			browser = await puppeteer.launch({
+				args: [...chromium.args, "--disable-dev-shm-usage", "--ignore-certificate-errors"],
+				executablePath: await chromium.executablePath(),
+				headless: true,
+			});
+		} else {
+			const puppeteer = (await import("puppeteer")).default;
+			browser = await puppeteer.launch({
+				args: ["--no-sandbox", "--disable-setuid-sandbox"],
+				headless: true,
+			});
+		}
 
         if (!browser) {
             throw new Error("Failed to launch browser");
         }
 
-        const page = await browser.newPage();
-        console.log("Page opened"); // Debugging log
-
-        // Set the HTML content of the page
+        page = await browser.newPage();
         await page.setContent(await htmlTemplate, {
-            // * "waitUntil" prop makes fonts work in templates
-            waitUntil: "networkidle0",
+            waitUntil: ["networkidle0", "load", "domcontentloaded"],
+            timeout: 30000,
         });
-        console.log("Page content set"); // Debugging log
 
-        // Add Tailwind CSS
         await page.addStyleTag({
             url: TAILWIND_CDN,
         });
-        console.log("Style tag added"); // Debugging log
 
-        // Generate the PDF
-        const pdf: Buffer = await page.pdf({
-            format: "a4",
-            printBackground: true,
-        });
-        console.log("PDF generated"); // Debugging log
+		const pdf: Uint8Array = await page.pdf({
+			format: "a4",
+			printBackground: true,
+			preferCSSPageSize: true,
+		});
 
-        for (const page of await browser.pages()) {
-            await page.close();
-        }
-
-        // Close the Puppeteer browser
-        await browser.close();
-        console.log("Browser closed"); // Debugging log
-
-        // Create a Blob from the PDF data
-        const pdfBlob = new Blob([pdf], { type: "application/pdf" });
-
-        const response = new NextResponse(pdfBlob, {
-            headers: {
-                "Content-Type": "application/pdf",
-                "Content-Disposition": "inline; filename=invoice.pdf",
-            },
-            status: 200,
-        });
-
-        return response;
-    } catch (error) {
-        console.error(error);
-
-        // Return an error response
-        return new NextResponse(`Error generating PDF: \n${error}`, {
-            status: 500,
-        });
-    } finally {
-        if (browser) {
-            await Promise.race([browser.close(), browser.close(), browser.close()]);
-        }
-    }
+		return new NextResponse(new Blob([pdf], { type: "application/pdf" }), {
+			headers: {
+				"Content-Type": "application/pdf",
+				"Content-Disposition": "attachment; filename=invoice.pdf",
+				"Cache-Control": "no-cache",
+				Pragma: "no-cache",
+			},
+			status: 200,
+		});
+	} catch (error: any) {
+		console.error("PDF Generation Error:", error);
+		return new NextResponse(
+			JSON.stringify({ error: "Failed to generate PDF" }),
+			{
+				status: 500,
+				headers: {
+					"Content-Type": "application/json",
+				},
+			}
+		);
+	} finally {
+		if (page) {
+			try {
+				await page.close();
+			} catch (e) {
+				console.error("Error closing page:", e);
+			}
+		}
+		if (browser) {
+			try {
+				const pages = await browser.pages();
+				await Promise.all(pages.map((p) => p.close()));
+				await browser.close();
+			} catch (e) {
+				console.error("Error closing browser:", e);
+			}
+		}
+	}
 }
